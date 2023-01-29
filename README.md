@@ -1,31 +1,18 @@
-castv2
-======
+# node-castv2
 
-[![NPM version](https://badge.fury.io/js/castv2.svg)](http://badge.fury.io/js/castv2)
-[![Dependency Status](https://img.shields.io/david/thibauts/node-castv2.svg)](https://david-dm.org/thibauts/node-castv2)
-[![npm](https://img.shields.io/npm/dm/castv2.svg?maxAge=2592000)]()
-
-### An implementation of the Chromecast CASTV2 protocol
+An implementation of the Chromecast CASTV2 protocol.
 
 This module is an implementation of the Chromecast CASTV2 protocol over TLS. The internet is very sparse on information about the new Chromecast protocol so big props go to [github.com/vincentbernat](https://github.com/vincentbernat) and his [nodecastor](https://github.com/vincentbernat/nodecastor) module that helped me start off on the right foot and save a good deal of time in my research.
 
 The module provides both a `Client` and a `Server` implementation of the low-level protocol. The server is (sadly) pretty useless because device authentication gets in the way for now (and maybe for good). The client still allows you to connect and exchange messages with a Chromecast dongle without any restriction. 
 
-Installation
-------------
+## Installation
 
 ```bash
-$ npm install castv2
+$ npm install @tristanpenman/castv2
 ```
 
-On windows, to avoid native modules dependencies, use
-
-```bash
-$ npm install castv2 --no-optional
-```
-
-Usage
------
+## Usage
 
 ```js
 var Client = require('castv2').Client;
@@ -78,8 +65,7 @@ Run it with the following command to get a full trace of the messages exchanged 
 $ DEBUG=* node example.js
 ```
 
-Protocol description
---------------------
+## Protocol Description
 
 This is an attempt at documenting the low-level protocol. I hope it will give sender-app makers a clearer picture of what is happening behind the curtain, and give the others ideas about how this kind of protocol can be implemented. The information presented here has been collated from various internet sources (mainly example code and other attempts to implement the protocol) and my own trial and error. Correct me as needed as I may have gotten concepts or namings wrong.
 
@@ -135,7 +121,12 @@ Senders and receivers communicate through *channels* defined by the `namespace` 
 
 Though, many protocols use JSON encoded messages / commands, which makes them easy to understand and implement.
 
-Each *sender* or *receiver* can implement one or multiple protocols. For instance the Chromecast *platform* (`receiver-0`) implements the protocols for the following namespaces : `urn:x-cast:com.google.cast.tp.connection`, `urn:x-cast:com.google.cast.tp.heartbeat`, `urn:x-cast:com.google.cast.receiver` and `urn:x-cast:com.google.cast.tp.deviceauth`.
+Each *sender* or *receiver* can implement one or multiple protocols. For instance the Chromecast *platform* (`receiver-0`) implements the protocols for the following namespaces:
+
+* `urn:x-cast:com.google.cast.tp.connection`
+* `urn:x-cast:com.google.cast.tp.heartbeat`
+* `urn:x-cast:com.google.cast.receiver`
+* `urn:x-cast:com.google.cast.tp.deviceauth`
 
 ### Communicating with receivers
 
@@ -253,7 +244,8 @@ You can join an existing session (launched by another sender) by issuing the sam
 | `{ "type": "SET_VOLUME", "volume": { level: <float> } }`   | sets volume. `level` is a float between 0 and 1
 | `{ "type": "SET_VOLUME", "volume": { muted: <boolean> } }` | mutes / unmutes. `muted` is true or false
 
-Contributors
-------------
+## Contributors
 
+* [thibauts](https://github.com/thibauts) (Thibaut Séguy - original author)
 * [jamiees2](https://github.com/jamiees2) (James Sigurðarson)
+* [tristanpenman](https://github.com/tristanpenman) (Tristan Penman)

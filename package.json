@@ -1,8 +1,11 @@
 {
-  "name": "castv2",
+  "name": "@tristanpenman/castv2",
   "version": "0.2.0",
   "description": "An implementation of the Chromecast CASTV2 protocol",
-  "author": "thibauts",
+  "authors": [
+    "thibauts",
+    "tristanpenman"
+  ],
   "license": "MIT",
   "main": "index.js",
   "dependencies": {
@@ -17,7 +20,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git://github.com/thibauts/node-castv2.git"
+    "url": "git://github.com/tristanpenman/node-castv2.git"
   },
   "keywords": [
     "chromecast",
