@@ -1,0 +1,611 @@
+#!/usr/bin/env node
+
+const child_process = require('child_process');
+const crypto = require('crypto');
+const dgram = require('dgram');
+const fs = require('fs');
+const { Buffer } = require('buffer');
+const { Heap } = require('heap-js');
+const { v4: uuidv4 } = require('uuid');
+
+// -------------------------------------------------------------------------------------------
+//
+// Device properties
+//
+
+// identification
+const deviceModel = 'Vivi'
+const friendlyName = 'Test';
+const id = uuidv4();
+const udn = id;
+
+// -------------------------------------------------------------------------------------------
+//
+// Parse command line arguments
+//
+
+let disableMdns = false;
+let clientPrefix = null;
+let tlsPort = 8009;
+let outputFile = null;
+let udpPort = 36916;
+let useMpv = null;
+
+if (!process.env.VIVI_DEBUG) {
+  console.debug = () => {};
+}
+
+if (!process.argv[2]) {
+  console.log('Usage:');
+  console.log(`  ${process.argv[1]} <cert-json-path> [--client-prefix=<prefix> (e.g. 192.168.1.20)] [--pipe-to-mpv] [--output-file=<path>] [--tls-port=<port>] [--udp-port=<port>]`);
+  process.exit(1);
+}
+
+const { Advertisement, Device, Server } = require('..');
+
+const certPath = process.argv[2];
+
+const optionalArgs = [];
+process.argv.slice(3).forEach((arg) => {
+  const parts = arg.split('=');
+  parts.forEach((part) => {
+    optionalArgs.push(part);
+  })
+});
+
+while (optionalArgs.length > 0) {
+  const arg = optionalArgs.shift();
+  switch (arg) {
+    case '--client-prefix':
+      clientPrefix = optionalArgs.shift();
+      if (clientPrefix) {
+        console.log(`client prefix: ${clientPrefix}`);
+      } else {
+        console.log('Expected value for option: --client-prefix');
+        process.exit(1);
+      }
+      break;
+    case '--disable-mdns':
+      disableMdns=true;
+      break;
+    case '--output-file':
+      outputFile = optionalArgs.shift();
+      if (outputFile) {
+        console.log(`output file: ${outputFile}`);
+      } else {
+        console.log('Expected value for option: --output-file');
+        process.exit(1);
+      }
+      break;
+    case '--pipe-to-mpv':
+      useMpv = true;
+      break;
+    case '--tls-port':
+      tlsPort = parseInt(optionalArgs.shift(), 10);
+      break;
+    case '--udp-port':
+      udpPort = parseInt(optionalArgs.shift(), 10);
+      break;
+    default:
+      console.log(`Unrecognised option: ${arg}`);
+      process.exit(1);
+  }
+}
+
+// -------------------------------------------------------------------------------------------
+//
+// Setup outputs
+//
+
+let mpv = null;
+if (useMpv) {
+  try {
+    mpv = child_process.spawn('mpv', ['--no-correct-pts', '--fps=60', '--untimed', '--profile=low-latency', '-'], { shell: true });
+    mpv.stdout.pipe(process.stdout);
+  } catch (err) {
+    console.log('Failed to start mpv', { err });
+    process.exit(1);
+  }
+}
+
+let output = null;
+if (outputFile) {
+  output = fs.createWriteStream(outputFile);
+  if (!output) {
+    console.log(`Failed to open output file: ${outputFile}`);
+    process.exit(1);
+  }
+}
+
+// -------------------------------------------------------------------------------------------
+//
+// Load certificates used for device authentication
+//
+
+// Parse certs file from Reflector cert service
+const lines = fs.readFileSync(certPath).toString().replace(/\n$/, '').replace(/\n/g, "\\n")
+const certs = JSON.parse(lines.trim());
+
+// Signature does not contain header/footer; easy to load
+const signature = Buffer.from(certs['sig'], 'base64');
+
+// ICA and platform certs do, so we need to remove them first
+const trimPem = (pem) => {
+  const lines = pem.split('\n');
+  return lines.slice(1, lines.length - 1).join('');
+};
+
+const clientAuthCertificate = Buffer.from(trimPem(certs.cpu), 'base64');
+const intermediateCertificate = [
+  Buffer.from(trimPem(certs.ica), 'base64')
+];
+
+// -------------------------------------------------------------------------------------------
+//
+// UDP server to handle incoming mirroring data
+//
+
+// decryption state (TODO: make this modular)
+let decipher = null;
+let key = null;
+let iv = null;
+
+const createUdpServer = () => {
+  let chkPtFrameId = -1;
+  let currentFrameId = -1;
+  let frameCounter = -1;
+  let expectedSeqNumber = -1;
+  let expectedPacketId = 0;
+
+  const udpServer = dgram.createSocket('udp4');
+
+  udpServer.on('error', (err) => {
+    console.log(`server error:\n${err.stack}`);
+  });
+
+  let ntp1 = 0;
+  let ntp2 = 0;
+  let ssrcFirstSource = 0xB;
+  let highestSequenceNumber = -1;
+  let jitterEstimate = 0;
+  let lsr = 0;
+  let dlsr = 0;
+
+  // TODO: lost packet recovery not currently implemented
+  let lost = null;
+
+  let sentReceiver = false;
+
+  const sendReceiverReport = (rinfo) => {
+    if (highestSequenceNumber < 0) {
+      console.log('no packets received yet');
+      return;
+    }
+
+    const msg = Buffer.alloc(52, 0);
+
+    console.debug('extended report', {
+      ntp1,
+      ntp2
+    });
+
+    // EXTENDED REPORT
+    // ver = 2, padding = 0, rc = 1
+    msg.writeUInt8(0b10000001, 0);
+    // payload type = 207 (extended report)
+    msg.writeUInt8(207, 1);
+    // length = 20 / 4 - 1 = 4
+    msg.writeUInt16BE(4, 2);
+    // ssrc of sender
+    msg.writeUInt32BE(ssrcFirstSource + 1, 4);
+    // Block type (Receiver Reference Time Report Block)
+    msg.writeUInt8(4, 8);
+    // type-specific (unused ?)
+    msg.writeUInt8(0, 9);
+    // length in 32-bit words minus one (includes this header)
+    msg.writeUInt16BE(2, 10);
+    // timestamp
+    msg.writeUInt32BE(ntp1, 12);
+    msg.writeUInt32BE(ntp2, 16);
+
+    // RECEIVER REPORT
+    // ver = 2, padding = 0, rc = 1
+    msg.writeUInt8(0b10000001, 0 + 20);
+    // payload type = 201 (receiver report)
+    msg.writeUInt8(201, 1 + 20);
+    // length = 32 / 4 - 1 = 7
+    msg.writeUInt16BE(7, 2 + 20);
+    // ssrc of sender
+    msg.writeUInt32BE(ssrcFirstSource + 1, 4 + 20);
+    // ssrc of first source
+    msg.writeUInt32BE(ssrcFirstSource, 8 + 20);
+    // fraction lost (1 byte); cumumlative number of packets lost (3 bytes)
+    msg.writeUInt32BE(0, 12 + 20);
+    // Ext. highest sequence number received
+    msg.writeUInt32BE(highestSequenceNumber, 16 + 20);
+    // Interarrival jitter estimate
+    msg.writeUInt32BE(jitterEstimate, 20 + 20);
+    // Last sender report timestamp (LSR)
+    msg.writeUInt32BE(lsr, 24 + 20);
+    // Delay since last sender report (DLSR)
+    msg.writeUInt32BE(dlsr, 28 + 20);
+
+    udpServer.send(msg, 0, msg.length, rinfo.port, rinfo.address, (error, bytes) => {
+      sentReceiver = true;
+      console.debug('udp send receiver report', {
+        error,
+        bytes
+      });
+    });
+  };
+
+  const sendPSFB = (rinfo) => {
+    if (!sentReceiver || chkPtFrameId === -1) {
+      return;
+    }
+
+    const msg = Buffer.alloc(lost ? 24 : 20);
+
+    // ver = 2, padding = 0, fmt = 15 = feedback
+    msg.writeUInt8(0b10001111);
+    // payload type = 206 = payload specific feedback type
+    msg.writeUInt8(206, 1);
+    // length = 20 / 4 - 1 = 4
+    msg.writeUInt16BE(lost ? 5 : 4, 2);
+    // ssrc of receiver
+    msg.writeUInt32BE(ssrcFirstSource + 1, 4)
+    // ssrc of sender
+    msg.writeUInt32BE(ssrcFirstSource, 8);
+    // C, A, S, T
+    msg.write('CAST', 12);
+    // CkPt Frame ID
+    msg.writeUInt8(chkPtFrameId & 0b11111111, 16);
+    // # loss fields
+    msg.writeUInt8(lost ? 1 : 0, 17);
+    // current playout delay
+    msg.writeUInt16BE(0, 18);
+
+    if (lost) {
+      console.log('lost', {
+        currentFrameId,
+        expectedPacketId
+      });
+      msg.writeUInt8(currentFrameId, 20);
+      msg.writeUInt16BE(expectedPacketId, 21);
+      msg.writeUInt8(0xff, 23);
+    }
+
+    udpServer.send(msg, 0, msg.length, rinfo.port, rinfo.address, (error, bytes) => {
+      console.debug('udp psfb', {
+        error,
+        bytes
+      });
+    });
+  };
+
+  const packetHeap = new Heap((a, b) => a.seq - b.seq);
+
+  const storePacket = (packet) => {
+    packetHeap.push(packet);
+  };
+
+  const getPacket = (seq) => {
+    if (packetHeap.isEmpty() || packetHeap.peek().seq !== seq) {
+      return null;
+    } else {
+      return packetHeap.pop();
+    }
+  };
+
+  const handleRtcp = (msg, rinfo) => {
+    let part = 1;
+
+    while (msg.length > 0) {
+      // read header
+      padding = (msg.readUInt8(0, 1) & 0b00100000) >> 5;
+      rc = msg.readUInt8(0, 1) & 0b00011111;
+      packetType = msg.readUInt8(1, 1);
+      length = (msg.readUInt16BE(2) + 1) * 4;
+      ssrc = msg.readUInt32BE(4);
+
+      if (ssrc !== 0xB) {
+        // ignore audio
+        return;
+      }
+
+      console.debug('rtcp', {
+        part,
+        padding,
+        rc,
+        packetType,
+        length,
+        ssrc
+      });
+
+      switch (packetType) {
+        case 200:
+          // Sender report
+          lsr = msg.readUInt32BE(16);
+          ntp1 = msg.readUInt32BE(8);
+          ntp2 = msg.readUInt32BE(12);
+
+          console.debug('sender report', {
+            ntpHi: ntp1,
+            ntpLo: ntp2,
+            rtp: lsr,
+            senderPacketCount: msg.readUInt32BE(20),
+            senderOctetCount: msg.readUInt32BE(24),
+          });
+
+          if (ssrc === 0xB) {
+            sendReceiverReport(rinfo);
+          }
+
+          break;
+
+        case 202:
+          // TODO: Handle source description
+          break;
+      }
+
+      msg = msg.slice(length);
+      part++;
+    }
+  };
+
+  const constructIv = (baseIv, frameNumber) => {
+    const localiv = Buffer.from(baseIv, "hex");
+
+    const left = Buffer.alloc(4, 0);
+    left.writeUInt32LE(frameNumber);
+
+    const right = Buffer.alloc(4, 0);
+    right.writeUInt32LE(localiv.readUInt32LE(8));
+
+    localiv.writeUInt32LE((left.readUInt32BE() ^ right.readUInt32LE()) >>> 0, 8);
+
+    return localiv;
+  }
+
+  udpServer.on('message', (msg, rinfo) => {
+    try {
+      // check version
+      const ver = (msg.readUInt8(0, 1) & 0b11000000) >> 6;
+      if (ver !== 2) {
+        console.log('ignoring packet with incorrect version', {
+          ver
+        });
+        return;
+      }
+
+      // check for rtcp packets
+      const type = msg.readUInt8(1, 1) & 0b01111111;
+      if (type === 72) {
+        handleRtcp(msg, rinfo);
+        return;
+      }
+
+      // ignore audio packets for now
+      if (type !== 96) {
+        return;
+      }
+
+      // read rtcp header
+      // const padding = (msg.readUInt8(0, 1) & 0b00100000) >> 5;
+      // const ext = (msg.readUInt8(0, 1) & 0b00010000) >> 4;
+      // const cc = msg.readUInt8(0, 1) & 0b00001111;
+      const seq = msg.readUIntBE(2, 2);
+      // const timestamp = msg.readUIntBE(4, 4);
+      // const marker = (msg.readUInt8(1, 1) & 0b10000000) >> 7;
+      // const ssrc = msg.readUInt32BE(8);
+
+      // read cast-specific rtcp payload header
+      const frameId = msg.readUInt8(13, 1);
+      const packetId = msg.readUInt16BE(14);
+
+      // locate the encrypted portion of the payload
+      const encrypted = msg.slice(18);
+
+      // the bits we care about for decoding
+      const packet = {
+        seq,
+        frameId,
+        packetId,
+        encrypted
+      };
+
+      console.debug('rtp video', packet);
+
+      if (expectedSeqNumber === -1) {
+        expectedSeqNumber = packet.seq; // fake it
+      }
+
+      if (packet.seq !== expectedSeqNumber) {
+        console.log('packets out of order', {
+          expectedSeqNumber,
+          actualSeq: packet.seq,
+          expectedPacketId,
+          actualPacketId: packet.packetId
+        });
+
+        if (packet.frameId > currentFrameId) {
+          console.log('moving to next frame');
+
+          // received a frame from the next packet
+          packetHeap.clear();
+          expectedSeqNumber = packet.seq;
+          expectedPacketId = packet.packetId;
+        }
+      }
+
+      // use a min-ordered heap to re-order packets if necessary
+      storePacket(packet);
+
+      while (true) {
+        // check for next expected packet
+        const nextPacket = getPacket(expectedSeqNumber);
+        if (!nextPacket) {
+          break;
+        }
+
+        // we're good to go again
+        lost = null;
+
+        expectedSeqNumber++;
+        expectedPacketId++;
+
+        // data used by receiver report
+        highestSequenceNumber = nextPacket.seq;
+        newFrameId = nextPacket.frameId;
+
+        // check if decryptor needs to be reset
+        if (newFrameId !== currentFrameId) {
+
+          // per-packet frame ID wraps at 255, so we need to track this ourselves
+          expectedPacketId = nextPacket.packetId + 1;
+          frameCounter++;
+          chkPtFrameId = currentFrameId;
+          currentFrameId = newFrameId;
+
+          // acknowledge that the packet has been received
+          sendPSFB(rinfo);
+
+          // construct IV using current frame counter
+          const localiv = constructIv(iv, frameCounter)
+
+          // reset crypto
+          decipher = crypto.createDecipheriv('aes-128-ctr', Buffer.from(key, "hex"), localiv);
+        }
+
+        const payload = decipher.update(nextPacket.encrypted);
+
+        console.debug('payload', {
+          frameId: packet.frameId,
+          seq: packet.seq,
+          payload: payload.toString('hex')
+        });
+
+        if (output) {
+          output.write(payload, () => {
+            console.debug('flushed to disk');
+          });
+        }
+
+        if (mpv) {
+          mpv.stdin.write(payload, () => {
+            console.debug('flushed to mpv');
+          });
+        }
+      }
+
+      if (lost) {
+        // send nacks if neccessary
+        sendExtendedReport(rinfo);
+      }
+
+    } catch (e) {
+      console.error(e);
+      process.exit(1);
+    }
+  });
+
+  return udpServer;
+}
+
+// -------------------------------------------------------------------------------------------
+//
+// Device and event handlers
+//
+
+const device = new Device({
+  deviceModel,
+  friendlyName,
+  id,
+  udn
+});
+
+device.on('challenge', ({ challenge, respond }) => {
+  console.log('challenge', challenge);
+
+  respond({
+    clientAuthCertificate,
+    intermediateCertificate,
+    signature
+  });
+});
+
+device.on('offer', ({ offer, respond }) => {
+  console.log('offer', offer);
+
+  const acceptStreams = offer.supportedStreams.filter((ss) => ss.type === 'video_source');
+
+  const answer = {
+    castMode: offer.castMode,
+    receiverGetStatus: offer.receiverGetStatus,
+    receiverRtcpEventLog: acceptStreams.map((ss) => ss.index),
+    sendIndexes: acceptStreams.map((ss) => ss.index),
+    ssrcs: acceptStreams.map((ss) => ss.ssrc),
+    udpPort
+  };
+
+  key = acceptStreams[0].aesKey;
+  iv = acceptStreams[0].aesIvMask;
+
+  console.log('encryption', {
+    key,
+    iv
+  });
+
+  console.log('answer', answer);
+
+  respond(answer);
+});
+
+// -------------------------------------------------------------------------------------------
+//
+// Advertisement and event handlers
+//
+
+const advertisement = new Advertisement(device, tlsPort);
+
+advertisement.on('start', () => {
+  console.log('advertising via mdns');
+});
+
+// -------------------------------------------------------------------------------------------
+//
+// Server and event handlers
+//
+
+const server = new Server({
+  certs,
+  clientPrefix,
+  device
+});
+
+server.on('listening', ({ port, host }) => {
+  console.log('listening', {
+    port,
+    host
+  });
+
+  if (!disableMdns) {
+    advertisement.start();
+  }
+});
+
+server.on('connect', (client) => {
+  console.log('connection from', client);
+});
+
+// -------------------------------------------------------------------------------------------
+//
+// Start servers
+//
+
+const udpServer = createUdpServer();
+
+udpServer.bind(udpPort, () => {
+  console.log(`udpserver listening on ${udpPort}`);
+  server.listen(tlsPort, '0.0.0.0');
+});

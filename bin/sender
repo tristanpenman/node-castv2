@@ -1,0 +1,294 @@
+#!/usr/bin/env node
+
+const crypto = require('crypto');
+const Client = require('../lib/client');
+const { DeviceAuthMessage } = require('../lib/proto');
+
+// constants
+const androidMirroringAppId = '674A0243';
+const connectionNamespace = 'urn:x-cast:com.google.cast.tp.connection';
+const deviceAuthNamespace = 'urn:x-cast:com.google.cast.tp.deviceauth';
+const discoveryNamespace = 'urn:x-cast:com.google.cast.receiver.discovery';
+const multizoneNamespace = 'urn:x-cast:com.google.cast.multizone';
+const receiverNamespace = 'urn:x-cast:com.google.cast.receiver';
+const setupNamespace = 'urn:x-cast:com.google.cast.setup';
+const webrtcNamespace = 'urn:x-cast:com.google.cast.webrtc';
+
+if (!process.argv[2]) {
+  console.log('Usage:');
+  console.log(`  ${process.argv[1]} <hostname>:<port>`);
+  process.exit(1);
+}
+
+const parts = process.argv[2].split(':');
+
+const castClient = new Client({
+  host: parts[0],
+  port: parts[1],
+  rejectUnauthorized: false
+});
+
+let requestId = 1;
+
+const handleDeviceAuthentication = (sourceId, destinationId, payload) => {
+  const response = DeviceAuthMessage.parse(payload);
+
+  console.log('recv deviceauth', {
+    sourceId,
+    destinationId,
+    payload: response
+  });
+
+  castClient.send(destinationId, sourceId, connectionNamespace, JSON.stringify({
+    type: 'CONNECT',
+    package: 'gms_cast_prober',
+    origin: {}
+  }));
+
+  const payload0 = JSON.stringify({
+    type: "eureka_info",
+    request_id: requestId++,
+    data: {
+      params: [
+        "version",
+        "name",
+        "device_info.ssdp_udn",
+        "device_info.cloud_device_id"
+      ]
+    }
+  });
+
+  console.log('send setup', {
+    destinationId: sourceId,
+    sourceId: destinationId,
+    payload: payload0
+  });
+
+  castClient.send(destinationId, sourceId, setupNamespace, payload0);
+
+  const payload1 = JSON.stringify({
+    type: 'GET_APP_AVAILABILITY',
+    appId: [ androidMirroringAppId, '8E6C866D' ],
+    requestId: requestId++
+  });
+
+  console.log('send receiver', {
+    destinationId: sourceId,
+    sourceId: destinationId,
+    payload: payload1
+  });
+
+  castClient.send(destinationId, sourceId, receiverNamespace, payload1);
+
+  const payload2 = JSON.stringify({
+    type: 'GET_STATUS',
+    requestId: requestId++
+  });
+
+  console.log('send receiver', {
+    destinationId: sourceId,
+    sourceId: destinationId,
+    payload: payload2
+  });
+
+  castClient.send(destinationId, sourceId, receiverNamespace, payload2);
+
+  const payload3 = JSON.stringify({
+    type: 'GET_DEVICE_INFO',
+    requestId: requestId++
+  })
+
+  console.log('send discovery', {
+    destinationId: sourceId,
+    sourceId: destinationId,
+    payload: payload3
+  });
+
+  castClient.send(destinationId, sourceId, discoveryNamespace, payload3);
+
+};
+
+const handleDiscovery = (sourceId, destinationId, payload) => {
+  console.log('recv discovery', {
+    sourceId,
+    destinationId,
+    payload
+  });
+
+  const p = JSON.parse(payload);
+
+  // const response = JSON.stringify({
+  //   requestId: requestId++,
+  //   type: "LAUNCH",
+  //   appId: "674A0243",
+  //   language: "en-AU",
+  //   supportedAppTypes: ["WEB"]
+  // });
+
+  // console.log('send receiver', {
+  //   destinationId: sourceId,
+  //   sourceId: destinationId,
+  //   payload: response
+  // });
+
+  // castClient.send(destinationId, sourceId, receiverNamespace, response);
+
+  const response2 = JSON.stringify({
+    requestId: requestId++,
+    type: 'GET_STATUS'
+  });
+
+  console.log('send multizone', {
+    response2
+  });
+
+  castClient.send(destinationId, sourceId, multizoneNamespace, response2);
+};
+
+const handleMultizone = (sourceId, destinationId, payload) => {
+  console.log('recv multizone', {
+    sourceId,
+    destinationId,
+    payload
+  });
+};
+
+const handleReceiver = (sourceId, destinationId, payload) => {
+  console.log('recv receiver', {
+    sourceId,
+    destinationId,
+    payload
+  });
+
+  const p = JSON.parse(payload);
+  if (p.type === 'RECEIVER_STATUS') {
+    const app = p.status.applications.find((app) => app.appId === '674A0243');
+    if (app) {
+      const response = JSON.stringify({
+        type: 'OFFER',
+        seqNum: requestId++,
+        offer: {
+          "castMode": "mirroring",
+          "receiverGetStatus": true,
+          supportedStreams: [
+            {
+              "aesIvMask": "51E2991F7B1491A8D90F477D75FF5FBC",
+              "aesKey": "D341A35D4CB10F1A32102BB1BF263A7F",
+              "bitRate": 102000,
+              "channels": 2,
+              "codecName": "opus",
+              "index": 0,
+              "receiverRtcpEventLog": true,
+              "rtpExtensions": "adaptive_playout_delay",
+              "rtpPayloadType": 127,
+              "rtpProfile": "cast",
+              "sampleRate": 48000,
+              "ssrc": 239298,
+              "targetDelay": 400,
+              "timeBase": "1/48000",
+              "type": "audio_source"
+            },
+            {
+              "aesIvMask": "51E2991F7B1491A8D90F477D75FF5FBC",
+              "aesKey": "D341A35D4CB10F1A32102BB1BF263A7F",
+              "codecName": "vp8",
+              "index": 1,
+              "maxBitRate": 5000000,
+              "maxFrameRate": "30000/1000",
+              "receiverRtcpEventLog": true,
+              "renderMode": "video",
+              "resolutions": [
+                {
+                  "height": 1080,
+                  "width": 1920
+                }
+              ],
+              "rtpExtensions": "adaptive_playout_delay",
+              "rtpPayloadType": 96,
+              "rtpProfile": "cast",
+              "ssrc": 950039,
+              "targetDelay": 400,
+              "timeBase": "1/90000",
+              "type": "video_source"
+            }
+          ]
+        }
+      });
+
+      console.log('send webrtc', {
+        destinationId: app.transportId,
+        sourceId: 'source-0',
+        payload: response
+      });
+
+      castClient.send('source-0', app.transportId, webrtcNamespace, response);
+
+    } else {
+      const response = JSON.stringify({
+        requestId: requestId++,
+        type: "LAUNCH",
+        appId: "674A0243",
+        language: "en-AU",
+        supportedAppTypes: ["WEB"]
+      });
+
+      console.log('send receiver', {
+        destinationId: sourceId,
+        sourceId: destinationId,
+        payload: response
+      });
+
+      castClient.send(destinationId, sourceId, receiverNamespace, response);
+    }
+  }
+};
+
+const handleSetup = (sourceId, destinationId, payload) => {
+  console.log('recv setup', {
+    sourceId,
+    destinationId,
+    payload
+  });
+};
+
+castClient.on('message', (senderId, destinationId, namespace, payload) => {
+  switch (namespace) {
+    case deviceAuthNamespace:
+      handleDeviceAuthentication(senderId, destinationId, payload);
+      break;
+    case discoveryNamespace:
+      handleDiscovery(senderId, destinationId, payload);
+      break;
+    case multizoneNamespace:
+      handleMultizone(senderId, destinationId, payload);
+      break;
+    case receiverNamespace:
+      handleReceiver(senderId, destinationId, payload);
+      break;
+    case setupNamespace:
+      handleSetup(senderId, destinationId, payload);
+      break;
+    case webrtcNamespace:
+      console.log('payload', { payload });
+    default:
+      console.log('unknown namespace: ' + namespace);
+  }
+});
+
+castClient.connect(() => {
+  const payload = {
+    challenge: {
+      hash_algorithm: 1,
+      signature_algorithm: 1,
+      sender_nonce: crypto.randomBytes(14)
+    }
+  };
+
+  console.log('send deviceauth', {
+    destinationId: 'receiver-0',
+    senderId: 'sender-0',
+    payload
+  });
+
+  castClient.send('sender-0', 'receiver-0', deviceAuthNamespace, DeviceAuthMessage.serialize(payload));
+});
