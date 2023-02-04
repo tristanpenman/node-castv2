@@ -4,8 +4,10 @@ const crypto = require('crypto');
 const Client = require('../lib/client');
 const { DeviceAuthMessage } = require('../lib/proto');
 
-// constants
+// applications
 const androidMirroringAppId = '674A0243';
+
+// namespaces
 const connectionNamespace = 'urn:x-cast:com.google.cast.tp.connection';
 const deviceAuthNamespace = 'urn:x-cast:com.google.cast.tp.deviceauth';
 const discoveryNamespace = 'urn:x-cast:com.google.cast.receiver.discovery';
@@ -39,11 +41,11 @@ const handleDeviceAuthentication = (sourceId, destinationId, payload) => {
     payload: response
   });
 
-  castClient.send(destinationId, sourceId, connectionNamespace, JSON.stringify({
+  castClient.sendUtf8(connectionNamespace, JSON.stringify({
     type: 'CONNECT',
     package: 'gms_cast_prober',
     origin: {}
-  }));
+  }), destinationId, sourceId);
 
   const payload0 = JSON.stringify({
     type: "eureka_info",
@@ -64,7 +66,7 @@ const handleDeviceAuthentication = (sourceId, destinationId, payload) => {
     payload: payload0
   });
 
-  castClient.send(destinationId, sourceId, setupNamespace, payload0);
+  castClient.sendUtf8(setupNamespace, payload0, destinationId, sourceId);
 
   const payload1 = JSON.stringify({
     type: 'GET_APP_AVAILABILITY',
@@ -78,7 +80,7 @@ const handleDeviceAuthentication = (sourceId, destinationId, payload) => {
     payload: payload1
   });
 
-  castClient.send(destinationId, sourceId, receiverNamespace, payload1);
+  castClient.sendUtf8(receiverNamespace, payload1, destinationId, sourceId);
 
   const payload2 = JSON.stringify({
     type: 'GET_STATUS',
@@ -91,7 +93,7 @@ const handleDeviceAuthentication = (sourceId, destinationId, payload) => {
     payload: payload2
   });
 
-  castClient.send(destinationId, sourceId, receiverNamespace, payload2);
+  castClient.sendUtf8(receiverNamespace, payload2, destinationId, sourceId);
 
   const payload3 = JSON.stringify({
     type: 'GET_DEVICE_INFO',
@@ -104,7 +106,7 @@ const handleDeviceAuthentication = (sourceId, destinationId, payload) => {
     payload: payload3
   });
 
-  castClient.send(destinationId, sourceId, discoveryNamespace, payload3);
+  castClient.sendUtf8(discoveryNamespace, payload3, destinationId, sourceId);
 
 };
 
@@ -115,24 +117,6 @@ const handleDiscovery = (sourceId, destinationId, payload) => {
     payload
   });
 
-  const p = JSON.parse(payload);
-
-  // const response = JSON.stringify({
-  //   requestId: requestId++,
-  //   type: "LAUNCH",
-  //   appId: "674A0243",
-  //   language: "en-AU",
-  //   supportedAppTypes: ["WEB"]
-  // });
-
-  // console.log('send receiver', {
-  //   destinationId: sourceId,
-  //   sourceId: destinationId,
-  //   payload: response
-  // });
-
-  // castClient.send(destinationId, sourceId, receiverNamespace, response);
-
   const response2 = JSON.stringify({
     requestId: requestId++,
     type: 'GET_STATUS'
@@ -142,7 +126,7 @@ const handleDiscovery = (sourceId, destinationId, payload) => {
     response2
   });
 
-  castClient.send(destinationId, sourceId, multizoneNamespace, response2);
+  castClient.sendUtf8(multizoneNamespace, response2, destinationId, sourceId);
 };
 
 const handleMultizone = (sourceId, destinationId, payload) => {
@@ -164,6 +148,11 @@ const handleReceiver = (sourceId, destinationId, payload) => {
   if (p.type === 'RECEIVER_STATUS') {
     const app = p.status.applications.find((app) => app.appId === '674A0243');
     if (app) {
+
+      castClient.sendUtf8(connectionNamespace, JSON.stringify({
+        type: 'CONNECT'
+      }), 'source-0', app.transportId);
+
       const response = JSON.stringify({
         type: 'OFFER',
         seqNum: requestId++,
@@ -221,7 +210,7 @@ const handleReceiver = (sourceId, destinationId, payload) => {
         payload: response
       });
 
-      castClient.send('source-0', app.transportId, webrtcNamespace, response);
+      castClient.sendUtf8(webrtcNamespace, response, 'source-0', app.transportId);
 
     } else {
       const response = JSON.stringify({
@@ -238,7 +227,7 @@ const handleReceiver = (sourceId, destinationId, payload) => {
         payload: response
       });
 
-      castClient.send(destinationId, sourceId, receiverNamespace, response);
+      castClient.sendUtf8(receiverNamespace, response, destinationId, sourceId);
     }
   }
 };
@@ -251,44 +240,65 @@ const handleSetup = (sourceId, destinationId, payload) => {
   });
 };
 
-castClient.on('message', (senderId, destinationId, namespace, payload) => {
+castClient.on('message', ({
+  destinationId,
+  namespace,
+  payloadBinary,
+  payloadUtf8,
+  sourceId
+}) => {
   switch (namespace) {
+    case connectionNamespace:
+      console.log('connection', {
+        payloadUtf8
+      });
+      break;
     case deviceAuthNamespace:
-      handleDeviceAuthentication(senderId, destinationId, payload);
+      handleDeviceAuthentication(sourceId, destinationId, payloadBinary);
       break;
     case discoveryNamespace:
-      handleDiscovery(senderId, destinationId, payload);
+      handleDiscovery(sourceId, destinationId, payloadUtf8);
       break;
     case multizoneNamespace:
-      handleMultizone(senderId, destinationId, payload);
+      handleMultizone(sourceId, destinationId, payloadUtf8);
       break;
     case receiverNamespace:
-      handleReceiver(senderId, destinationId, payload);
+      handleReceiver(sourceId, destinationId, payloadUtf8);
       break;
     case setupNamespace:
-      handleSetup(senderId, destinationId, payload);
+      handleSetup(sourceId, destinationId, payloadUtf8);
       break;
     case webrtcNamespace:
-      console.log('payload', { payload });
+      console.log('webrtc', {
+        payloadUtf8
+      });
+      break;
     default:
-      console.log('unknown namespace: ' + namespace);
+      console.log('unknown namespace', {
+        namespace
+      });
   }
 });
 
 castClient.connect(() => {
   const payload = {
     challenge: {
-      hash_algorithm: 1,
-      signature_algorithm: 1,
-      sender_nonce: crypto.randomBytes(14)
+      hashAlgorithm: 1,
+      signatureAlgorithm: 1,
+      senderNonce: crypto.randomBytes(14)
     }
   };
 
   console.log('send deviceauth', {
     destinationId: 'receiver-0',
-    senderId: 'sender-0',
+    sourceId: 'sender-0',
     payload
   });
 
-  castClient.send('sender-0', 'receiver-0', deviceAuthNamespace, DeviceAuthMessage.serialize(payload));
+  castClient.sendBinary(
+    deviceAuthNamespace,
+    DeviceAuthMessage.serialize(payload),
+    'sender-0',
+    'receiver-0'
+  );
 });
