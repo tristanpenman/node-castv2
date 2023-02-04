@@ -4,17 +4,20 @@ const crypto = require('crypto');
 const Client = require('../lib/client');
 const { DeviceAuthMessage } = require('../lib/proto');
 
-// applications
-const androidMirroringAppId = '674A0243';
+const {
+  androidMirroringAudioVideoAppId,
+  castMirroringAudioVideoAppId
+} = require('../lib/apps');
 
-// namespaces
-const connectionNamespace = 'urn:x-cast:com.google.cast.tp.connection';
-const deviceAuthNamespace = 'urn:x-cast:com.google.cast.tp.deviceauth';
-const discoveryNamespace = 'urn:x-cast:com.google.cast.receiver.discovery';
-const multizoneNamespace = 'urn:x-cast:com.google.cast.multizone';
-const receiverNamespace = 'urn:x-cast:com.google.cast.receiver';
-const setupNamespace = 'urn:x-cast:com.google.cast.setup';
-const webrtcNamespace = 'urn:x-cast:com.google.cast.webrtc';
+const {
+  connectionNamespace,
+  deviceAuthNamespace,
+  discoveryNamespace,
+  multizoneNamespace,
+  receiverNamespace,
+  setupNamespace,
+  webrtcNamespace
+} = require('../lib/namespaces');
 
 if (!process.argv[2]) {
   console.log('Usage:');
@@ -35,102 +38,73 @@ let requestId = 1;
 const handleDeviceAuthentication = (sourceId, destinationId, payload) => {
   const response = DeviceAuthMessage.parse(payload);
 
-  console.log('recv deviceauth', {
+  console.debug('recv deviceauth', {
     sourceId,
     destinationId,
-    payload: response
+    response
   });
 
-  castClient.sendUtf8(connectionNamespace, JSON.stringify({
-    type: 'CONNECT',
-    package: 'gms_cast_prober',
-    origin: {}
-  }), destinationId, sourceId);
+  {
+    // connect to the receiver that we've just authenticated with
+    const payloadUtf8 = JSON.stringify({
+      type: 'CONNECT'
+    });
 
-  const payload0 = JSON.stringify({
-    type: "eureka_info",
-    request_id: requestId++,
-    data: {
-      params: [
-        "version",
-        "name",
-        "device_info.ssdp_udn",
-        "device_info.cloud_device_id"
-      ]
-    }
-  });
+    castClient.sendUtf8(connectionNamespace, payloadUtf8, destinationId, sourceId);
+  }
 
-  console.log('send setup', {
-    destinationId: sourceId,
-    sourceId: destinationId,
-    payload: payload0
-  });
+  {
+    // get application availability
+    const payloadUtf8 = JSON.stringify({
+      type: 'GET_APP_AVAILABILITY',
+      appId: [
+        androidMirroringAudioVideoAppId,
+        castMirroringAudioVideoAppId,
+      ],
+      requestId: requestId++
+    });
 
-  castClient.sendUtf8(setupNamespace, payload0, destinationId, sourceId);
+    castClient.sendUtf8(receiverNamespace, payloadUtf8, destinationId, sourceId);
+  }
 
-  const payload1 = JSON.stringify({
-    type: 'GET_APP_AVAILABILITY',
-    appId: [ androidMirroringAppId, '8E6C866D' ],
-    requestId: requestId++
-  });
+  {
+    // get device status
+    const payloadUtf8 = JSON.stringify({
+      type: 'GET_STATUS',
+      requestId: requestId++
+    });
 
-  console.log('send receiver', {
-    destinationId: sourceId,
-    sourceId: destinationId,
-    payload: payload1
-  });
+    castClient.sendUtf8(receiverNamespace, payloadUtf8, destinationId, sourceId);
+  }
 
-  castClient.sendUtf8(receiverNamespace, payload1, destinationId, sourceId);
+  {
+    // get device info
+    const payloadUtf8 = JSON.stringify({
+      type: 'GET_DEVICE_INFO',
+      requestId: requestId++
+    });
 
-  const payload2 = JSON.stringify({
-    type: 'GET_STATUS',
-    requestId: requestId++
-  });
-
-  console.log('send receiver', {
-    destinationId: sourceId,
-    sourceId: destinationId,
-    payload: payload2
-  });
-
-  castClient.sendUtf8(receiverNamespace, payload2, destinationId, sourceId);
-
-  const payload3 = JSON.stringify({
-    type: 'GET_DEVICE_INFO',
-    requestId: requestId++
-  })
-
-  console.log('send discovery', {
-    destinationId: sourceId,
-    sourceId: destinationId,
-    payload: payload3
-  });
-
-  castClient.sendUtf8(discoveryNamespace, payload3, destinationId, sourceId);
-
+    castClient.sendUtf8(discoveryNamespace, payloadUtf8, destinationId, sourceId);
+  }
 };
 
 const handleDiscovery = (sourceId, destinationId, payload) => {
-  console.log('recv discovery', {
+  console.debug('recv discovery', {
     sourceId,
     destinationId,
     payload
   });
 
-  const response2 = JSON.stringify({
+  const payloadUtf8 = JSON.stringify({
     requestId: requestId++,
     type: 'GET_STATUS'
   });
 
-  console.log('send multizone', {
-    response2
-  });
-
-  castClient.sendUtf8(multizoneNamespace, response2, destinationId, sourceId);
+  castClient.sendUtf8(multizoneNamespace, payloadUtf8, destinationId, sourceId);
 };
 
 const handleMultizone = (sourceId, destinationId, payload) => {
-  console.log('recv multizone', {
+  console.debug('recv multizone', {
     sourceId,
     destinationId,
     payload
@@ -138,98 +112,114 @@ const handleMultizone = (sourceId, destinationId, payload) => {
 };
 
 const handleReceiver = (sourceId, destinationId, payload) => {
-  console.log('recv receiver', {
+  console.debug('recv receiver', {
     sourceId,
     destinationId,
     payload
   });
 
-  const p = JSON.parse(payload);
-  if (p.type === 'RECEIVER_STATUS') {
-    const app = p.status.applications.find((app) => app.appId === '674A0243');
-    if (app) {
+  const message = JSON.parse(payload);
+  if (message.type === 'RECEIVER_STATUS') {
+    // check in mirroring app is running
+    const app = message.status.applications 
+      ? message.status.applications.find((app) => app.appId === androidMirroringAudioVideoAppId)
+      : null;
 
-      castClient.sendUtf8(connectionNamespace, JSON.stringify({
-        type: 'CONNECT'
-      }), 'source-0', app.transportId);
-
-      const response = JSON.stringify({
-        type: 'OFFER',
-        seqNum: requestId++,
-        offer: {
-          "castMode": "mirroring",
-          "receiverGetStatus": true,
-          supportedStreams: [
-            {
-              "aesIvMask": "51E2991F7B1491A8D90F477D75FF5FBC",
-              "aesKey": "D341A35D4CB10F1A32102BB1BF263A7F",
-              "bitRate": 102000,
-              "channels": 2,
-              "codecName": "opus",
-              "index": 0,
-              "receiverRtcpEventLog": true,
-              "rtpExtensions": "adaptive_playout_delay",
-              "rtpPayloadType": 127,
-              "rtpProfile": "cast",
-              "sampleRate": 48000,
-              "ssrc": 239298,
-              "targetDelay": 400,
-              "timeBase": "1/48000",
-              "type": "audio_source"
-            },
-            {
-              "aesIvMask": "51E2991F7B1491A8D90F477D75FF5FBC",
-              "aesKey": "D341A35D4CB10F1A32102BB1BF263A7F",
-              "codecName": "vp8",
-              "index": 1,
-              "maxBitRate": 5000000,
-              "maxFrameRate": "30000/1000",
-              "receiverRtcpEventLog": true,
-              "renderMode": "video",
-              "resolutions": [
-                {
-                  "height": 1080,
-                  "width": 1920
-                }
-              ],
-              "rtpExtensions": "adaptive_playout_delay",
-              "rtpPayloadType": 96,
-              "rtpProfile": "cast",
-              "ssrc": 950039,
-              "targetDelay": 400,
-              "timeBase": "1/90000",
-              "type": "video_source"
-            }
-          ]
-        }
-      });
-
-      console.log('send webrtc', {
-        destinationId: app.transportId,
-        sourceId: 'source-0',
-        payload: response
-      });
-
-      castClient.sendUtf8(webrtcNamespace, response, 'source-0', app.transportId);
-
-    } else {
-      const response = JSON.stringify({
+    if (!app) {
+      // if not, request that application is lacunhed
+      const payloadUtf8 = JSON.stringify({
         requestId: requestId++,
         type: "LAUNCH",
-        appId: "674A0243",
+        appId: androidMirroringAudioVideoAppId,
         language: "en-AU",
         supportedAppTypes: ["WEB"]
       });
 
-      console.log('send receiver', {
+      console.debug('send receiver', {
         destinationId: sourceId,
         sourceId: destinationId,
-        payload: response
+        payloadUtf8
       });
 
-      castClient.sendUtf8(receiverNamespace, response, destinationId, sourceId);
+      castClient.sendUtf8(receiverNamespace, payloadUtf8, destinationId, sourceId);
+      return;
     }
+
+    // connect to application
+    castClient.sendUtf8(connectionNamespace, JSON.stringify({
+      type: 'CONNECT'
+    }), 'source-0', app.transportId);
+
+    // send offer to app
+    const response = JSON.stringify({
+      type: 'OFFER',
+      seqNum: requestId++,
+      offer: {
+        castMode: "mirroring",
+        receiverGetStatus: true,
+        supportedStreams: [
+          {
+            aesIvMask: "51E2991F7B1491A8D90F477D75FF5FBC",
+            aesKey: "D341A35D4CB10F1A32102BB1BF263A7F",
+            bitRate: 102000,
+            channels: 2,
+            codecName: "opus",
+            index: 0,
+            receiverRtcpEventLog: true,
+            rtpExtensions: "adaptive_playout_delay",
+            rtpPayloadType: 127,
+            rtpProfile: "cast",
+            sampleRate: 48000,
+            ssrc: 239298,
+            targetDelay: 400,
+            timeBase: "1/48000",
+            type: "audio_source"
+          },
+          {
+            aesIvMask: "51E2991F7B1491A8D90F477D75FF5FBC",
+            aesKey: "D341A35D4CB10F1A32102BB1BF263A7F",
+            codecName: "vp8",
+            index: 1,
+            maxBitRate: 5000000,
+            maxFrameRate: "30000/1000",
+            receiverRtcpEventLog: true,
+            renderMode: "video",
+            resolutions: [
+              {
+                height: 1080,
+                width: 1920
+              }
+            ],
+            rtpExtensions: "adaptive_playout_delay",
+            rtpPayloadType: 96,
+            rtpProfile: "cast",
+            ssrc: 950039,
+            targetDelay: 400,
+            timeBase: "1/90000",
+            type: "video_source"
+          }
+        ]
+      }
+    });
+
+    console.debug('send webrtc', {
+      destinationId: app.transportId,
+      sourceId: 'source-0',
+      payload: response
+    });
+
+    castClient.sendUtf8(webrtcNamespace, response, 'source-0', app.transportId);
+    return;
   }
+  
+  if (message.responseType === 'GET_APP_AVAILABILITY') {
+    console.log(message);
+    return;
+  }
+
+  console.warn('Unexpected receiver message', {
+    message
+  });
 };
 
 const handleSetup = (sourceId, destinationId, payload) => {
@@ -281,7 +271,7 @@ castClient.on('message', ({
 });
 
 castClient.connect(() => {
-  const payload = {
+  const payloadBinary = {
     challenge: {
       hashAlgorithm: 1,
       signatureAlgorithm: 1,
@@ -289,15 +279,15 @@ castClient.connect(() => {
     }
   };
 
-  console.log('send deviceauth', {
+  console.debug('send deviceauth', {
     destinationId: 'receiver-0',
     sourceId: 'sender-0',
-    payload
+    payloadBinary
   });
 
   castClient.sendBinary(
     deviceAuthNamespace,
-    DeviceAuthMessage.serialize(payload),
+    DeviceAuthMessage.serialize(payloadBinary),
     'sender-0',
     'receiver-0'
   );
