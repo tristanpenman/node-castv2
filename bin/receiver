@@ -544,7 +544,7 @@ device.on('offer', ({ offer, respond }) => {
     receiverGetStatus: offer.receiverGetStatus,
     receiverRtcpEventLog: acceptStreams.map((ss) => ss.index),
     sendIndexes: acceptStreams.map((ss) => ss.index),
-    ssrcs: acceptStreams.map((ss) => ss.ssrc),
+    ssrcs: acceptStreams.map((ss) => ss.ssrc + 1),
     udpPort
   };
 
