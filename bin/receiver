@@ -13,7 +13,6 @@ const { v4: uuidv4 } = require('uuid');
 // Device properties
 //
 
-// identification
 const deviceModel = 'Vivi'
 const friendlyName = 'Test';
 const id = uuidv4();
@@ -29,7 +28,7 @@ let clientPrefix = null;
 let tlsPort = 8009;
 let outputFile = null;
 let udpPort = 36916;
-let useMpv = null;
+let useMpv = false;
 
 if (!process.env.VIVI_DEBUG) {
   console.debug = () => {};
@@ -98,6 +97,7 @@ while (optionalArgs.length > 0) {
 //
 
 let mpv = null;
+
 if (useMpv) {
   try {
     mpv = child_process.spawn('mpv', ['--no-correct-pts', '--fps=60', '--untimed', '--profile=low-latency', '-'], { shell: true });
@@ -109,6 +109,7 @@ if (useMpv) {
 }
 
 let output = null;
+
 if (outputFile) {
   output = fs.createWriteStream(outputFile);
   if (!output) {

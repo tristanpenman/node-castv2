@@ -6,13 +6,15 @@ const { DeviceAuthMessage } = require('../lib/proto');
 
 const {
   androidMirroringAudioVideoAppId,
-  castMirroringAudioVideoAppId
+  castMirroringAudioVideoAppId,
+  mediaReceiverAppId
 } = require('../lib/apps');
 
 const {
   connectionNamespace,
   deviceAuthNamespace,
   discoveryNamespace,
+  heartbeatNamespace,
   multizoneNamespace,
   receiverNamespace,
   setupNamespace,
@@ -34,6 +36,14 @@ const castClient = new Client({
 });
 
 let requestId = 1;
+
+const handleConnection = (sourceId, destinationId, payload) => {
+  console.debug('recv connection', {
+    sourceId,
+    destinationId,
+    payload
+  });
+};
 
 const handleDeviceAuthentication = (sourceId, destinationId, payload) => {
   const response = DeviceAuthMessage.parse(payload);
@@ -60,6 +70,7 @@ const handleDeviceAuthentication = (sourceId, destinationId, payload) => {
       appId: [
         androidMirroringAudioVideoAppId,
         castMirroringAudioVideoAppId,
+        mediaReceiverAppId
       ],
       requestId: requestId++
     });
@@ -103,6 +114,20 @@ const handleDiscovery = (sourceId, destinationId, payload) => {
   castClient.sendUtf8(multizoneNamespace, payloadUtf8, destinationId, sourceId);
 };
 
+const handleHeartbeat = (sourceId, destinationId, payload) => {
+  console.debug('recv heartbeat', {
+    sourceId,
+    destinationId,
+    payload
+  });
+
+  const payloadUtf8 = JSON.stringify({
+    type: 'PONG'
+  });
+
+  castClient.sendUtf8(heartbeatNamespace, payloadUtf8, destinationId, sourceId);
+};
+
 const handleMultizone = (sourceId, destinationId, payload) => {
   console.debug('recv multizone', {
     sourceId,
@@ -122,7 +147,7 @@ const handleReceiver = (sourceId, destinationId, payload) => {
   if (message.type === 'RECEIVER_STATUS') {
     // check in mirroring app is running
     const app = message.status.applications 
-      ? message.status.applications.find((app) => app.appId === androidMirroringAudioVideoAppId)
+      ? message.status.applications.find((app) => app.appId === mediaReceiverAppId)
       : null;
 
     if (!app) {
@@ -130,7 +155,7 @@ const handleReceiver = (sourceId, destinationId, payload) => {
       const payloadUtf8 = JSON.stringify({
         requestId: requestId++,
         type: "LAUNCH",
-        appId: androidMirroringAudioVideoAppId,
+        appId: mediaReceiverAppId,
         language: "en-AU",
         supportedAppTypes: ["WEB"]
       });
@@ -150,70 +175,91 @@ const handleReceiver = (sourceId, destinationId, payload) => {
       type: 'CONNECT'
     }), 'source-0', app.transportId);
 
-    // send offer to app
-    const response = JSON.stringify({
-      type: 'OFFER',
-      seqNum: requestId++,
-      offer: {
-        castMode: "mirroring",
-        receiverGetStatus: true,
-        supportedStreams: [
-          {
-            aesIvMask: "51E2991F7B1491A8D90F477D75FF5FBC",
-            aesKey: "D341A35D4CB10F1A32102BB1BF263A7F",
-            bitRate: 102000,
-            channels: 2,
-            codecName: "opus",
-            index: 0,
-            receiverRtcpEventLog: true,
-            rtpExtensions: "adaptive_playout_delay",
-            rtpPayloadType: 127,
-            rtpProfile: "cast",
-            sampleRate: 48000,
-            ssrc: 239298,
-            targetDelay: 400,
-            timeBase: "1/48000",
-            type: "audio_source"
-          },
-          {
-            aesIvMask: "51E2991F7B1491A8D90F477D75FF5FBC",
-            aesKey: "D341A35D4CB10F1A32102BB1BF263A7F",
-            codecName: "vp8",
-            index: 1,
-            maxBitRate: 5000000,
-            maxFrameRate: "30000/1000",
-            receiverRtcpEventLog: true,
-            renderMode: "video",
-            resolutions: [
-              {
-                height: 1080,
-                width: 1920
-              }
-            ],
-            rtpExtensions: "adaptive_playout_delay",
-            rtpPayloadType: 96,
-            rtpProfile: "cast",
-            ssrc: 950039,
-            targetDelay: 400,
-            timeBase: "1/90000",
-            type: "video_source"
-          }
+    const media = {
+      // Here you can plug an URL to any mp4, webm, mp3 or jpg file with the proper contentType.
+      contentId: 'http://commondatastorage.googleapis.com/gtv-videos-bucket/big_buck_bunny_1080p.mp4',
+      contentType: 'video/mp4',
+      streamType: 'BUFFERED', // or LIVE
+
+      // Title and cover displayed while buffering
+      metadata: {
+        type: 0,
+        metadataType: 0,
+        title: "Big Buck Bunny", 
+        images: [
+          { url: 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/BigBuckBunny.jpg' }
         ]
-      }
+      }        
+    };
+
+    const response = JSON.stringify({
+      data
     });
 
-    console.debug('send webrtc', {
-      destinationId: app.transportId,
-      sourceId: 'source-0',
-      payload: response
-    });
+    // // send offer to app
+    // const response = JSON.stringify({
+    //   type: 'OFFER',
+    //   seqNum: requestId++,
+    //   offer: {
+    //     castMode: "mirroring",
+    //     receiverGetStatus: true,
+    //     supportedStreams: [
+    //       {
+    //         aesIvMask: "51E2991F7B1491A8D90F477D75FF5FBC",
+    //         aesKey: "D341A35D4CB10F1A32102BB1BF263A7F",
+    //         bitRate: 102000,
+    //         channels: 2,
+    //         codecName: "opus",
+    //         index: 0,
+    //         receiverRtcpEventLog: true,
+    //         rtpExtensions: "adaptive_playout_delay",
+    //         rtpPayloadType: 127,
+    //         rtpProfile: "cast",
+    //         sampleRate: 48000,
+    //         ssrc: 239298,
+    //         targetDelay: 400,
+    //         timeBase: "1/48000",
+    //         type: "audio_source"
+    //       },
+    //       {
+    //         aesIvMask: "51E2991F7B1491A8D90F477D75FF5FBC",
+    //         aesKey: "D341A35D4CB10F1A32102BB1BF263A7F",
+    //         codecName: "vp8",
+    //         index: 1,
+    //         maxBitRate: 5000000,
+    //         maxFrameRate: "30000/1000",
+    //         receiverRtcpEventLog: true,
+    //         renderMode: "video",
+    //         resolutions: [
+    //           {
+    //             height: 1080,
+    //             width: 1920
+    //           }
+    //         ],
+    //         rtpExtensions: "adaptive_playout_delay",
+    //         rtpPayloadType: 96,
+    //         rtpProfile: "cast",
+    //         ssrc: 950039,
+    //         targetDelay: 400,
+    //         timeBase: "1/90000",
+    //         type: "video_source"
+    //       }
+    //     ]
+    //   }
+    // });
+
+    // console.debug('send webrtc', {
+    //   destinationId: app.transportId,
+    //   sourceId: 'source-0',
+    //   payload: response
+    // });
 
     castClient.sendUtf8(webrtcNamespace, response, 'source-0', app.transportId);
+
     return;
   }
   
   if (message.responseType === 'GET_APP_AVAILABILITY') {
-    console.log(message);
     return;
   }
 
@@ -239,15 +285,16 @@ castClient.on('message', ({
 }) => {
   switch (namespace) {
     case connectionNamespace:
-      console.log('connection', {
-        payloadUtf8
-      });
+      handleConnection(sourceId, destinationId, payloadUtf8);
       break;
     case deviceAuthNamespace:
       handleDeviceAuthentication(sourceId, destinationId, payloadBinary);
       break;
     case discoveryNamespace:
       handleDiscovery(sourceId, destinationId, payloadUtf8);
+      break;
+    case heartbeatNamespace:
+      handleHeartbeat(sourceId, destinationId, payloadUtf8);
       break;
     case multizoneNamespace:
       handleMultizone(sourceId, destinationId, payloadUtf8);

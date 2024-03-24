@@ -2,9 +2,11 @@
 
 An implementation of the Chromecast CASTV2 protocol.
 
-This module is an implementation of the Chromecast CASTV2 protocol over TLS. The internet is very sparse on information about the new Chromecast protocol so big props go to [github.com/vincentbernat](https://github.com/vincentbernat) and his [nodecastor](https://github.com/vincentbernat/nodecastor) module that helped me start off on the right foot and save a good deal of time in my research.
+This package provides both a `Client` and a `Server` implementation of the low-level protocol. While the `Server` class, and related classes are sufficient for implementing a receiver, the `Client` class is rather limited.
 
-The module provides both a `Client` and a `Server` implementation of the low-level protocol. The server is (sadly) pretty useless because device authentication gets in the way for now (and maybe for good). The client still allows you to connect and exchange messages with a Chromecast dongle without any restriction. 
+The server classes provide the foundations for a Chromecast receiver implementation. However, Device Authentication is problematic, as it assumes access to a rooted Chromecast that can be used to respond to Device Authentication challenges.
+
+The client classes still allow you to connect and exchange messages with a Chromecast dongle without any restriction. 
 
 ## Installation
 
@@ -12,58 +14,19 @@ The module provides both a `Client` and a `Server` implementation of the low-lev
 $ npm install @tristanpenman/castv2
 ```
 
-## Usage
+## Examples
 
-```js
-var Client = require('castv2').Client;
-var mdns = require('mdns');
+This repo includes two example applications.
 
-var browser = mdns.createBrowser(mdns.tcp('googlecast'));
+### Sender
 
-browser.on('serviceUp', function(service) {
-  console.log('found device %s at %s:%d', service.name, service.addresses[0], service.port);
-  ondeviceup(service.addresses[0]);
-  browser.stop();
-});
+The example code in [bin/sender](./bin/sender) shows the basic structure of a client that will connect to a Chromecast receiver, and attempt to start a screen mirroring session using the Android Mirroring application. This is an incomplete example, as it does not attempt to maintain detailed connection state, and does not actually transmit any video or audio content. For a more complete example, see the [node-castv2-client](https://github.com/tristanpenman/node-castv2-client) repo.
 
-browser.start();
+### Receiver
 
-function ondeviceup(host) {
+The example code in [bin/receiver](./bin/receiver) is more complete. 
 
-  var client = new Client();
-  client.connect(host, function() {
-    // create various namespace handlers
-    var connection = client.createChannel('sender-0', 'receiver-0', 'urn:x-cast:com.google.cast.tp.connection', 'JSON');
-    var heartbeat  = client.createChannel('sender-0', 'receiver-0', 'urn:x-cast:com.google.cast.tp.heartbeat', 'JSON');
-    var receiver   = client.createChannel('sender-0', 'receiver-0', 'urn:x-cast:com.google.cast.receiver', 'JSON');
-
-    // establish virtual connection to the receiver
-    connection.send({ type: 'CONNECT' });
-
-    // start heartbeating
-    setInterval(function() {
-      heartbeat.send({ type: 'PING' });
-    }, 5000);
-
-    // launch YouTube app
-    receiver.send({ type: 'LAUNCH', appId: 'YouTube', requestId: 1 });
-
-    // display receiver status updates
-    receiver.on('message', function(data, broadcast) {
-      if(data.type = 'RECEIVER_STATUS') {
-        console.log(data.status);
-      }
-    });
-  });
-
-}
-```
-
-Run it with the following command to get a full trace of the messages exchanged with the dongle.
-
-```bash 
-$ DEBUG=* node example.js
-```
+The receiver example functions as a complete (but buggy) Chromecast receiver, capable of displaying a screen mirroring session.
 
 ## Protocol Description
 
